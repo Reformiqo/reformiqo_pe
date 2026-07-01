@@ -180,18 +180,24 @@ def install_custom_fields():
 # activate. See [[feedback-client-scripts-fixtures]] for the pattern.
 _CLIENT_SCRIPT_NAME = "Payment Entry - Reformiqo PE Relax Mandatory"
 _CLIENT_SCRIPT_BODY = r"""
-// ABP2-I481 re-reopen #5 — Reformiqo PE
-// Relax client-side mandatory on Payment Entry using Frappe's
-// official frm.set_df_property() API. That's the ONLY way that
-// updates all three docfield caches Frappe's check_mandatory reads
-// from (fields_dict.df, meta.docfield_map[dt][fieldname], and the
-// per-doc copy). Direct assignment to df.reqd doesn't touch the
-// per-doc map, which is what Sahil kept hitting.
+// ABP2-I481 re-reopen #6 — Reformiqo PE (Sahil 2026-07-01)
+// Auto-fill paid_amount + received_amount + paid_from + paid_to from
+// the Direct GL Debit/Credit child tables so the mandatory check
+// naturally passes — no monkey-patching, no relax loops.
+//
+// Whatever total is entered in the Account Paid To (Debit) OR the
+// Account Paid From (Credit) table becomes both:
+//   frm.doc.paid_amount     ← Σ(custom_account_paid_to.amount)
+//   frm.doc.received_amount ← Σ(custom_account_paid_from.amount)
+// paid_from / paid_to are populated from the first row of the
+// respective table so ERPNext's own account_currency lookup works.
+//
+// set_df_property is used to also strip mandatoriness from a few
+// fields that Panchhi's Custom Fields flipped to reqd=1 (Project,
+// Cost Center, currency/exchange-rate) which the tables don't drive.
 var RELAXED_PE_FIELDS = [
     "party_type", "party", "party_name", "party_balance",
     "party_bank_account", "contact_person", "contact_email",
-    "paid_from", "paid_to",
-    "paid_amount", "received_amount",
     "paid_from_account_currency", "paid_to_account_currency",
     "source_exchange_rate", "target_exchange_rate",
     "reference_no", "reference_date",
@@ -207,11 +213,64 @@ function reformiqo_pe_relax(frm) {
     });
 }
 
+function reformiqo_pe_sync_totals(frm) {
+    var debit_total = 0, credit_total = 0;
+    (frm.doc.custom_account_paid_to || []).forEach(function (r) {
+        debit_total += flt(r.amount);
+    });
+    (frm.doc.custom_account_paid_from || []).forEach(function (r) {
+        credit_total += flt(r.amount);
+    });
+    // Populate the header amounts. If a table is empty use the other
+    // side's total (Direct GL enforces balance server-side).
+    var primary = debit_total || credit_total;
+    if (primary > 0) {
+        if (frm.doc.paid_amount !== primary) {
+            frm.set_value("paid_amount", primary);
+        }
+        if (frm.doc.received_amount !== primary) {
+            frm.set_value("received_amount", primary);
+        }
+    }
+    // paid_to = first Debit row.account; paid_from = first Credit
+    // row.account. Populated only if the user hasn't overridden.
+    var first_debit = (frm.doc.custom_account_paid_to || [])[0];
+    var first_credit = (frm.doc.custom_account_paid_from || [])[0];
+    if (first_debit && first_debit.account && !frm.doc.paid_to) {
+        frm.set_value("paid_to", first_debit.account);
+    }
+    if (first_credit && first_credit.account && !frm.doc.paid_from) {
+        frm.set_value("paid_from", first_credit.account);
+    }
+}
+
 frappe.ui.form.on("Payment Entry", {
-    refresh:     function (frm) { reformiqo_pe_relax(frm); },
-    onload:      function (frm) { reformiqo_pe_relax(frm); },
-    before_save: function (frm) { reformiqo_pe_relax(frm); },
-    validate:    function (frm) { reformiqo_pe_relax(frm); }
+    refresh: function (frm) {
+        reformiqo_pe_relax(frm);
+        reformiqo_pe_sync_totals(frm);
+    },
+    onload: function (frm) {
+        reformiqo_pe_relax(frm);
+    },
+    before_save: function (frm) {
+        reformiqo_pe_relax(frm);
+        reformiqo_pe_sync_totals(frm);
+    },
+    validate: function (frm) {
+        reformiqo_pe_sync_totals(frm);
+    }
+});
+
+// Sync on every row change in either table.
+frappe.ui.form.on("Account Paid To", {
+    amount:  function (frm) { reformiqo_pe_sync_totals(frm); },
+    account: function (frm) { reformiqo_pe_sync_totals(frm); },
+    custom_account_paid_to_remove: function (frm) { reformiqo_pe_sync_totals(frm); }
+});
+frappe.ui.form.on("Account Paid From", {
+    amount:  function (frm) { reformiqo_pe_sync_totals(frm); },
+    account: function (frm) { reformiqo_pe_sync_totals(frm); },
+    custom_account_paid_from_remove: function (frm) { reformiqo_pe_sync_totals(frm); }
 });
 """
 
