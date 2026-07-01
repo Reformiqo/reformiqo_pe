@@ -87,6 +87,46 @@ reformiqo_pe.DIRECT_GL_NON_MANDATORY_FIELDS = [
 	"project", "cost_center",
 ];
 
+// ABP2-I481 re-reopen #3 (Sahil 2026-07-01, Image #65): despite the
+// Property Setters (DB layer) AND the meta-cache patch (JS in-memory
+// layer), the "Missing Fields" alert kept firing on Paid Amount /
+// Received Amount. Something else in the ERPNext PE controller re-
+// writes df.reqd to 1 in between our patch and check_mandatory's read.
+// Rather than chase every race, we hard-wrap check_mandatory once
+// per session: when the doctype is Payment Entry, strip our relaxed
+// fields' reqd BEFORE Frappe walks docfield_list.
+(function () {
+	if (window.__reformiqo_pe_check_mandatory_wrapped) return;
+	window.__reformiqo_pe_check_mandatory_wrapped = true;
+	const original = frappe.ui.form.check_mandatory;
+	frappe.ui.form.check_mandatory = function (frm) {
+		try {
+			if (frm && frm.doc && frm.doc.doctype === "Payment Entry") {
+				const relaxed = new Set(reformiqo_pe.DIRECT_GL_NON_MANDATORY_FIELDS);
+				const dfl = frappe.meta.docfield_list["Payment Entry"] || [];
+				dfl.forEach((d) => {
+					if (relaxed.has(d.fieldname)) {
+						d.reqd = 0;
+						d.mandatory_depends_on = "";
+					}
+				});
+				const per_doc_list = (frappe.meta.docfield_copy || {})["Payment Entry"];
+				if (per_doc_list && per_doc_list[frm.doc.name]) {
+					Object.values(per_doc_list[frm.doc.name]).forEach((d) => {
+						if (d && relaxed.has(d.fieldname)) {
+							d.reqd = 0;
+							d.mandatory_depends_on = "";
+						}
+					});
+				}
+			}
+		} catch (e) {
+			console.warn("reformiqo_pe: check_mandatory pre-patch failed", e);
+		}
+		return original.apply(this, arguments);
+	};
+})();
+
 reformiqo_pe.apply_direct_gl_on = function (frm) {
 	// Hide the standard party controls everywhere they appear.
 	["party_type", "party", "party_name", "party_balance",
