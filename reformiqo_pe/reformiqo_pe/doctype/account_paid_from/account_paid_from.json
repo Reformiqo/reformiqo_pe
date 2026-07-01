@@ -9,6 +9,8 @@
   "account",
   "cost_center",
   "project",
+  "reference_doctype",
+  "reference_name",
   "party_type",
   "party",
   "amount",
@@ -39,6 +41,22 @@
    "in_list_view": 1,
    "label": "Project",
    "options": "Project"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Select",
+   "label": "Reference Type",
+   "options": "\nSales Invoice\nPurchase Invoice",
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype",
+   "in_list_view": 1,
+   "columns": 2
   },
   {
    "fieldname": "party_type",
