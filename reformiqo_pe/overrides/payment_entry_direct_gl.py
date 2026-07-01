@@ -412,6 +412,28 @@ def _relaxed_set_missing_values(self):
 	return _ORIGINAL_SET_MISSING_VALUES(self)
 
 
+_ORIGINAL_VALIDATE_MANDATORY = None
+
+
+def _relaxed_validate_mandatory(self):
+	"""ABP2-I481 re-reopen #5 (Sahil 2026-07-01, Image #67):
+	ERPNext's PaymentEntry.validate_mandatory hard-throws
+	"Paid Amount is mandatory" (payment_entry.py:643) regardless of
+	Property Setter. That fires SERVER-side after the client
+	check_mandatory passes and produces the same "Missing Fields"
+	dialog wording.
+
+	In Direct GL mode we've already auto-wired paid_amount /
+	received_amount / source_exchange_rate / target_exchange_rate
+	from the child tables via autowire_native_fields_before_submit
+	— skip ERPNext's check entirely. In standard mode we still
+	delegate to the original.
+	"""
+	if cint(self.get("custom_is_direct_gl_payment") or 0) == 1:
+		return
+	return _ORIGINAL_VALIDATE_MANDATORY(self)
+
+
 def _relaxed_validate_bank_accounts(self):
 	"""FRD §9 L-15. Replaces the receivable/payable-only check on
 	paid_from/paid_to with a non-group-leaf check so the primary leg
@@ -441,13 +463,18 @@ def install_bank_check_override():
 	every worker start. Idempotent — checks if we've already replaced
 	the method before doing so.
 
-	Patches TWO methods:
+	Patches THREE methods:
 	  • validate_bank_accounts (L-15) — relaxes the Bank/Cash-only
 	    filter on paid_from / paid_to on ALL PEs.
 	  • set_missing_values (L-11 server companion) — skips the
 	    party-mandatory throw when Direct GL mode is on.
+	  • validate_mandatory (ABP2-I481 re-reopen #5) — skips the
+	    hardcoded "Paid Amount is mandatory" server-side throw when
+	    Direct GL mode is on. Our before_validate autowire has
+	    already populated those from the child tables.
 	"""
 	global _ORIGINAL_VALIDATE_BANK_ACCOUNTS, _ORIGINAL_SET_MISSING_VALUES
+	global _ORIGINAL_VALIDATE_MANDATORY
 	try:
 		from erpnext.accounts.doctype.payment_entry.payment_entry import (
 			PaymentEntry,
@@ -460,8 +487,11 @@ def install_bank_check_override():
 		PaymentEntry, "validate_bank_accounts", None)
 	_ORIGINAL_SET_MISSING_VALUES = getattr(
 		PaymentEntry, "set_missing_values", None)
+	_ORIGINAL_VALIDATE_MANDATORY = getattr(
+		PaymentEntry, "validate_mandatory", None)
 	PaymentEntry.validate_bank_accounts = _relaxed_validate_bank_accounts
 	PaymentEntry.set_missing_values = _relaxed_set_missing_values
+	PaymentEntry.validate_mandatory = _relaxed_validate_mandatory
 	PaymentEntry._reformiqo_pe_relaxed = True
 
 
