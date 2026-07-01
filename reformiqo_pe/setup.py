@@ -214,7 +214,21 @@ _DIRECT_GL_OPTIONAL_FIELDS = (
 
 PROPERTY_SETTERS = []
 for _f in _DIRECT_GL_OPTIONAL_FIELDS:
-	PROPERTY_SETTERS.append(_ps(_f, "mandatory_depends_on", _STANDARD_ONLY_MANDATORY))
+	# ABP2-I481 re-reopen #2 (Sahil 2026-07-01, Image #64): the
+	# `eval:!doc.custom_is_direct_gl_payment` condition kept these
+	# fields client-side mandatory when Direct GL was off, and Sahil
+	# hit the alert repeatedly. Per his ask ("we need to override"),
+	# unconditionally clear reqd + wipe mandatory_depends_on so the
+	# browser NEVER blocks save on these fields.
+	# Server-side safety net:
+	#   * Direct GL mode  → autowire_native_fields_before_submit
+	#     populates paid_amount / received_amount / paid_from / paid_to
+	#     from the child tables before ERPNext's validate runs.
+	#   * Standard mode   → ERPNext's own validate_mandatory
+	#     (payment_entry.py:646) still throws "Paid Amount is
+	#     mandatory" server-side, so a truly-empty standard PE can't
+	#     submit. Only the client-side pre-check is relaxed.
+	PROPERTY_SETTERS.append(_ps(_f, "mandatory_depends_on", ""))
 	PROPERTY_SETTERS.append(_ps(_f, "reqd", "0", property_type="Check"))
 
 

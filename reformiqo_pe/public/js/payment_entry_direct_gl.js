@@ -142,8 +142,38 @@ reformiqo_pe.apply_direct_gl_off = function (frm) {
 	frm.refresh_fields();
 };
 
+// ABP2-I481 re-reopen #2 (Sahil 2026-07-01, Image #64): always patch
+// the three meta caches on refresh so the client-side check_mandatory
+// never blocks save on these fields — even when Direct GL toggle is
+// still OFF at save-time. The Property Setter matches this at the DB
+// layer; this JS keeps in-memory copies in sync.
+reformiqo_pe.always_relax_client_mandatory = function (frm) {
+	reformiqo_pe.DIRECT_GL_NON_MANDATORY_FIELDS.forEach((f) => {
+		if (frm.fields_dict[f]) {
+			frm.fields_dict[f].df.reqd = 0;
+			frm.fields_dict[f].df.mandatory_depends_on = "";
+			frm.toggle_reqd(f, false);
+		}
+		const meta_list = frappe.meta.docfield_list["Payment Entry"] || [];
+		const meta_row = meta_list.find((d) => d.fieldname === f);
+		if (meta_row) {
+			meta_row.reqd = 0;
+			meta_row.mandatory_depends_on = "";
+		}
+		const per_doc = frappe.meta.get_docfield("Payment Entry", f, frm.doc.name);
+		if (per_doc) {
+			per_doc.reqd = 0;
+			per_doc.mandatory_depends_on = "";
+		}
+	});
+};
+
 frappe.ui.form.on("Payment Entry", {
 	refresh: function (frm) {
+		// Unconditionally relax client-side mandatoriness so the save
+		// dialog never blocks on Paid Amount / Received Amount /
+		// Project / Cost Center regardless of Direct GL toggle state.
+		reformiqo_pe.always_relax_client_mandatory(frm);
 		// Apply the current toggle state on every refresh so a
 		// re-opened submitted voucher also has the party fields
 		// hidden if it was posted in Direct GL mode.
@@ -171,12 +201,14 @@ frappe.ui.form.on("Payment Entry", {
 	// re-apply the clearing to defeat any ERPNext handler that
 	// restored reqd=1 in between refresh and save.
 	before_save: function (frm) {
+		reformiqo_pe.always_relax_client_mandatory(frm);
 		if (reformiqo_pe.is_direct_gl(frm)) {
 			reformiqo_pe.apply_direct_gl_on(frm);
 		}
 	},
 
 	validate: function (frm) {
+		reformiqo_pe.always_relax_client_mandatory(frm);
 		if (reformiqo_pe.is_direct_gl(frm)) {
 			reformiqo_pe.apply_direct_gl_on(frm);
 		}
