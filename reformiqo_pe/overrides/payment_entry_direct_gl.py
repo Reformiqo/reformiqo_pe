@@ -303,13 +303,19 @@ def autowire_native_fields_before_submit(doc, method=None):
 	doc.paid_to = first_debit.account
 	doc.paid_from = first_credit.account
 
-	# In Pay & Receive the amount is derived from the FIRST row of the
-	# primary leg. Contra uses the full total.
-	primary_amount = flt(first_debit.amount)
-	doc.paid_amount = primary_amount
-	doc.received_amount = primary_amount
-	doc.base_paid_amount = primary_amount
-	doc.base_received_amount = primary_amount
+	# ABP2-I481 re-reopen #7 (Sahil 2026-07-01, Image #70): use the
+	# TABLE TOTAL (sum of all Debit rows == sum of all Credit rows,
+	# enforced balanced by validate_direct_gl_mode) as paid_amount +
+	# received_amount so ERPNext's difference_amount check ends up at
+	# zero regardless of how many rows are in each table. GL entries
+	# are written directly from the tables via _relaxed_make_gl_entries
+	# below, so we don't need to pack multi-row totals into
+	# deductions.
+	total = sum(flt(r.amount) for r in paid_to_rows)
+	doc.paid_amount = total
+	doc.received_amount = total
+	doc.base_paid_amount = total
+	doc.base_received_amount = total
 	if not doc.source_exchange_rate:
 		doc.source_exchange_rate = 1
 	if not doc.target_exchange_rate:
@@ -340,31 +346,17 @@ def autowire_native_fields_before_submit(doc, method=None):
 		or doc.posting_date
 	)
 
-	# Wipe & rebuild the deductions grid so re-validate is idempotent.
+	# ABP2-I481 re-reopen #7 — no more deductions packing. GL entries
+	# come from _relaxed_make_gl_entries (below), which iterates the
+	# custom_account_paid_to / custom_account_paid_from tables
+	# directly. Wipe the deductions grid to keep re-validate
+	# idempotent and so ERPNext's set_difference_amount sees zero
+	# deduction total (paid_amount == received_amount, no offsets).
 	doc.set("deductions", [])
-
-	# Extra Paid-To rows (index 1+): each becomes an ADDITIONAL Dr
-	# posted via `deductions` (sign = +amount → Dr <account>).
-	for row in paid_to_rows[1:]:
-		doc.append("deductions", {
-			"account": row.account,
-			"cost_center": row.cost_center or _default_cc(doc.company),
-			"amount": flt(row.amount),
-			"description": (row.remarks or
-				f"{doc.custom_gl_payment_category or 'Direct GL'} — {row.account}"),
-		})
-
-	# Extra Paid-From rows (index 1+): each becomes a Cr → we post it
-	# as a NEGATIVE deduction so the native engine flips the sign
-	# (Deductions/Loss uses the convention: +amount = Dr, -amount = Cr).
-	for row in paid_from_rows[1:]:
-		doc.append("deductions", {
-			"account": row.account,
-			"cost_center": row.cost_center or _default_cc(doc.company),
-			"amount": -flt(row.amount),
-			"description": (row.remarks or
-				f"{doc.custom_gl_payment_category or 'Direct GL'} — {row.account}"),
-		})
+	# Also zero out the difference explicitly — set_difference_amount
+	# runs after us and recomputes, but this is a belt-and-suspenders
+	# guard in case ERPNext changes the calc order later.
+	doc.difference_amount = 0
 
 	# Party fields must be clean (defensive — validate already cleared
 	# them but a re-submit path could re-populate).
@@ -413,6 +405,77 @@ def _relaxed_set_missing_values(self):
 
 
 _ORIGINAL_VALIDATE_MANDATORY = None
+_ORIGINAL_MAKE_GL_ENTRIES = None
+
+
+def _relaxed_make_gl_entries(self, cancel=False, adv_adj=False):
+	"""ABP2-I481 re-reopen #7 (Sahil 2026-07-01, Image #70): in
+	Direct GL mode, write GL entries DIRECTLY from the custom
+	Debit/Credit tables — one entry per row, stamped with that row's
+	Cost Center and Project. Bypass ERPNext's paid_from / paid_to /
+	deductions machinery entirely so multi-row scenarios (1 Dr split
+	across 2 Cr, or vice-versa) don't trip the Difference Amount
+	check.
+
+	Standard mode delegates to the original make_gl_entries.
+	"""
+	if cint(self.get("custom_is_direct_gl_payment") or 0) != 1:
+		return _ORIGINAL_MAKE_GL_ENTRIES(self, cancel=cancel, adv_adj=adv_adj)
+
+	from erpnext.accounts.general_ledger import make_gl_entries as _post
+	entries = []
+	default_cc = _default_cc(self.company)
+	for row in (self.get("custom_account_paid_to") or []):
+		if not row.get("account") or not flt(row.get("amount")):
+			continue
+		entries.append(self.get_gl_dict({
+			"account": row.account,
+			"debit": flt(row.amount),
+			"debit_in_account_currency": flt(row.amount),
+			"credit": 0,
+			"credit_in_account_currency": 0,
+			"cost_center": row.get("cost_center") or default_cc,
+			"project": row.get("project"),
+			"party_type": row.get("party_type"),
+			"party": row.get("party"),
+			"against": ", ".join(
+				r.account for r in (self.get("custom_account_paid_from") or [])
+				if r.get("account")
+			),
+			"remarks": (
+				row.get("remarks")
+				or self.get("custom_gl_narration")
+				or self.get("remarks")
+				or f"Direct GL — {self.name}"
+			),
+		}, item=row))
+	for row in (self.get("custom_account_paid_from") or []):
+		if not row.get("account") or not flt(row.get("amount")):
+			continue
+		entries.append(self.get_gl_dict({
+			"account": row.account,
+			"credit": flt(row.amount),
+			"credit_in_account_currency": flt(row.amount),
+			"debit": 0,
+			"debit_in_account_currency": 0,
+			"cost_center": row.get("cost_center") or default_cc,
+			"project": row.get("project"),
+			"party_type": row.get("party_type"),
+			"party": row.get("party"),
+			"against": ", ".join(
+				r.account for r in (self.get("custom_account_paid_to") or [])
+				if r.get("account")
+			),
+			"remarks": (
+				row.get("remarks")
+				or self.get("custom_gl_narration")
+				or self.get("remarks")
+				or f"Direct GL — {self.name}"
+			),
+		}, item=row))
+	if entries:
+		_post(entries, cancel=cancel, adv_adj=adv_adj,
+			merge_entries=False, from_repost=False)
 
 
 def _relaxed_validate_mandatory(self):
@@ -463,18 +526,22 @@ def install_bank_check_override():
 	every worker start. Idempotent — checks if we've already replaced
 	the method before doing so.
 
-	Patches THREE methods:
+	Patches FOUR methods:
 	  • validate_bank_accounts (L-15) — relaxes the Bank/Cash-only
 	    filter on paid_from / paid_to on ALL PEs.
 	  • set_missing_values (L-11 server companion) — skips the
 	    party-mandatory throw when Direct GL mode is on.
 	  • validate_mandatory (ABP2-I481 re-reopen #5) — skips the
 	    hardcoded "Paid Amount is mandatory" server-side throw when
-	    Direct GL mode is on. Our before_validate autowire has
-	    already populated those from the child tables.
+	    Direct GL mode is on.
+	  • make_gl_entries (ABP2-I481 re-reopen #7) — writes GL entries
+	    directly from the custom Debit/Credit tables in Direct GL
+	    mode so multi-row splits post correctly (bypasses ERPNext's
+	    paid_from / paid_to / deductions machinery that trips the
+	    Difference Amount check).
 	"""
 	global _ORIGINAL_VALIDATE_BANK_ACCOUNTS, _ORIGINAL_SET_MISSING_VALUES
-	global _ORIGINAL_VALIDATE_MANDATORY
+	global _ORIGINAL_VALIDATE_MANDATORY, _ORIGINAL_MAKE_GL_ENTRIES
 	try:
 		from erpnext.accounts.doctype.payment_entry.payment_entry import (
 			PaymentEntry,
@@ -489,9 +556,12 @@ def install_bank_check_override():
 		PaymentEntry, "set_missing_values", None)
 	_ORIGINAL_VALIDATE_MANDATORY = getattr(
 		PaymentEntry, "validate_mandatory", None)
+	_ORIGINAL_MAKE_GL_ENTRIES = getattr(
+		PaymentEntry, "make_gl_entries", None)
 	PaymentEntry.validate_bank_accounts = _relaxed_validate_bank_accounts
 	PaymentEntry.set_missing_values = _relaxed_set_missing_values
 	PaymentEntry.validate_mandatory = _relaxed_validate_mandatory
+	PaymentEntry.make_gl_entries = _relaxed_make_gl_entries
 	PaymentEntry._reformiqo_pe_relaxed = True
 
 
