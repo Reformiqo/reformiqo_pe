@@ -168,7 +168,111 @@ def install_custom_fields():
 	and updates in place."""
 	create_custom_fields(CUSTOM_FIELDS_SPEC, ignore_validate=True)
 	_install_property_setters()
+	_install_client_script()
 	frappe.clear_cache(doctype=PE)
+
+
+# ABP2-I481 re-reopen #4 (Sahil 2026-07-01, Image #66): the bundled
+# public/js patch never survived — either Frappe Cloud didn't rebuild,
+# or the browser cached a stale bundle. Sahil asked explicitly for a
+# Client Script. This one lives in the DB, is loaded by Frappe on
+# every Payment Entry form render, and needs no bench build to
+# activate. See [[feedback-client-scripts-fixtures]] for the pattern.
+_CLIENT_SCRIPT_NAME = "Payment Entry - Reformiqo PE Relax Mandatory"
+_CLIENT_SCRIPT_BODY = r"""
+// ABP2-I481 re-reopen #4 — Reformiqo PE
+// Relax client-side mandatory checks on the Payment Entry fields we
+// autowire server-side so the "Missing Fields" alert never blocks
+// save on Paid Amount / Received Amount / Project / Cost Center /
+// Party / Paid From / Paid To. Server (ERPNext) still enforces
+// genuine invalidity on submit.
+(function () {
+    var RELAXED = [
+        "party_type", "party", "party_name", "party_balance",
+        "party_bank_account", "contact_person", "contact_email",
+        "paid_from", "paid_to",
+        "paid_amount", "received_amount",
+        "paid_from_account_currency", "paid_to_account_currency",
+        "source_exchange_rate", "target_exchange_rate",
+        "reference_no", "reference_date",
+        "project", "cost_center"
+    ];
+    var RELAXED_SET = {};
+    for (var i = 0; i < RELAXED.length; i++) RELAXED_SET[RELAXED[i]] = 1;
+
+    function strip_mandatory(frm) {
+        RELAXED.forEach(function (f) {
+            if (frm.fields_dict[f]) {
+                frm.fields_dict[f].df.reqd = 0;
+                frm.fields_dict[f].df.mandatory_depends_on = "";
+                try { frm.toggle_reqd(f, false); } catch (e) {}
+            }
+            var meta_list = frappe.meta.docfield_list["Payment Entry"] || [];
+            for (var j = 0; j < meta_list.length; j++) {
+                if (meta_list[j].fieldname === f) {
+                    meta_list[j].reqd = 0;
+                    meta_list[j].mandatory_depends_on = "";
+                }
+            }
+            try {
+                var per_doc = frappe.meta.get_docfield("Payment Entry", f, frm.doc.name);
+                if (per_doc) {
+                    per_doc.reqd = 0;
+                    per_doc.mandatory_depends_on = "";
+                }
+            } catch (e) {}
+        });
+    }
+
+    // Wrap check_mandatory once so no race condition in ERPNext's
+    // controller can undo our strip between refresh and save.
+    if (!window.__reformiqo_pe_check_mandatory_wrapped) {
+        window.__reformiqo_pe_check_mandatory_wrapped = 1;
+        var _orig = frappe.ui.form.check_mandatory;
+        frappe.ui.form.check_mandatory = function (frm) {
+            try {
+                if (frm && frm.doc && frm.doc.doctype === "Payment Entry") {
+                    var dfl = frappe.meta.docfield_list["Payment Entry"] || [];
+                    for (var k = 0; k < dfl.length; k++) {
+                        if (RELAXED_SET[dfl[k].fieldname]) {
+                            dfl[k].reqd = 0;
+                            dfl[k].mandatory_depends_on = "";
+                        }
+                    }
+                }
+            } catch (e) { console.warn("reformiqo_pe pre-patch failed", e); }
+            return _orig.apply(this, arguments);
+        };
+    }
+
+    frappe.ui.form.on("Payment Entry", {
+        refresh:     function (frm) { strip_mandatory(frm); },
+        onload:      function (frm) { strip_mandatory(frm); },
+        before_save: function (frm) { strip_mandatory(frm); },
+        validate:    function (frm) { strip_mandatory(frm); }
+    });
+})();
+"""
+
+
+def _install_client_script():
+	"""Upsert the Client Script that relaxes PE mandatory checks.
+	Lives in the DB so Frappe loads it on every form render — no
+	bench build required, no browser bundle to invalidate."""
+	if frappe.db.exists("Client Script", _CLIENT_SCRIPT_NAME):
+		cs = frappe.get_doc("Client Script", _CLIENT_SCRIPT_NAME)
+		if cs.script != _CLIENT_SCRIPT_BODY.strip():
+			cs.script = _CLIENT_SCRIPT_BODY.strip()
+			cs.enabled = 1
+			cs.save(ignore_permissions=True)
+	else:
+		cs = frappe.new_doc("Client Script")
+		cs.name = _CLIENT_SCRIPT_NAME
+		cs.dt = PE
+		cs.view = "Form"
+		cs.enabled = 1
+		cs.script = _CLIENT_SCRIPT_BODY.strip()
+		cs.insert(ignore_permissions=True)
 
 
 # Property Setters that make party_type / party / party-driven fields
@@ -260,8 +364,11 @@ def uninstall_custom_fields():
 			if frappe.db.exists("Custom Field", name):
 				frappe.delete_doc("Custom Field", name,
 					ignore_permissions=True, force=1)
-	# Also drop the Property Setters we installed so uninstall is
+	# Also drop the Client Script + Property Setters so uninstall is
 	# fully reversible.
+	if frappe.db.exists("Client Script", _CLIENT_SCRIPT_NAME):
+		frappe.delete_doc("Client Script", _CLIENT_SCRIPT_NAME,
+			ignore_permissions=True, force=1)
 	for spec in PROPERTY_SETTERS:
 		name = "{}-{}-{}".format(spec["doc_type"], spec["field_name"],
 		                        spec["property"])
