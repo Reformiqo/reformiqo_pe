@@ -180,78 +180,39 @@ def install_custom_fields():
 # activate. See [[feedback-client-scripts-fixtures]] for the pattern.
 _CLIENT_SCRIPT_NAME = "Payment Entry - Reformiqo PE Relax Mandatory"
 _CLIENT_SCRIPT_BODY = r"""
-// ABP2-I481 re-reopen #4 — Reformiqo PE
-// Relax client-side mandatory checks on the Payment Entry fields we
-// autowire server-side so the "Missing Fields" alert never blocks
-// save on Paid Amount / Received Amount / Project / Cost Center /
-// Party / Paid From / Paid To. Server (ERPNext) still enforces
-// genuine invalidity on submit.
-(function () {
-    var RELAXED = [
-        "party_type", "party", "party_name", "party_balance",
-        "party_bank_account", "contact_person", "contact_email",
-        "paid_from", "paid_to",
-        "paid_amount", "received_amount",
-        "paid_from_account_currency", "paid_to_account_currency",
-        "source_exchange_rate", "target_exchange_rate",
-        "reference_no", "reference_date",
-        "project", "cost_center"
-    ];
-    var RELAXED_SET = {};
-    for (var i = 0; i < RELAXED.length; i++) RELAXED_SET[RELAXED[i]] = 1;
+// ABP2-I481 re-reopen #5 — Reformiqo PE
+// Relax client-side mandatory on Payment Entry using Frappe's
+// official frm.set_df_property() API. That's the ONLY way that
+// updates all three docfield caches Frappe's check_mandatory reads
+// from (fields_dict.df, meta.docfield_map[dt][fieldname], and the
+// per-doc copy). Direct assignment to df.reqd doesn't touch the
+// per-doc map, which is what Sahil kept hitting.
+var RELAXED_PE_FIELDS = [
+    "party_type", "party", "party_name", "party_balance",
+    "party_bank_account", "contact_person", "contact_email",
+    "paid_from", "paid_to",
+    "paid_amount", "received_amount",
+    "paid_from_account_currency", "paid_to_account_currency",
+    "source_exchange_rate", "target_exchange_rate",
+    "reference_no", "reference_date",
+    "project", "cost_center"
+];
 
-    function strip_mandatory(frm) {
-        RELAXED.forEach(function (f) {
-            if (frm.fields_dict[f]) {
-                frm.fields_dict[f].df.reqd = 0;
-                frm.fields_dict[f].df.mandatory_depends_on = "";
-                try { frm.toggle_reqd(f, false); } catch (e) {}
-            }
-            var meta_list = frappe.meta.docfield_list["Payment Entry"] || [];
-            for (var j = 0; j < meta_list.length; j++) {
-                if (meta_list[j].fieldname === f) {
-                    meta_list[j].reqd = 0;
-                    meta_list[j].mandatory_depends_on = "";
-                }
-            }
-            try {
-                var per_doc = frappe.meta.get_docfield("Payment Entry", f, frm.doc.name);
-                if (per_doc) {
-                    per_doc.reqd = 0;
-                    per_doc.mandatory_depends_on = "";
-                }
-            } catch (e) {}
-        });
-    }
-
-    // Wrap check_mandatory once so no race condition in ERPNext's
-    // controller can undo our strip between refresh and save.
-    if (!window.__reformiqo_pe_check_mandatory_wrapped) {
-        window.__reformiqo_pe_check_mandatory_wrapped = 1;
-        var _orig = frappe.ui.form.check_mandatory;
-        frappe.ui.form.check_mandatory = function (frm) {
-            try {
-                if (frm && frm.doc && frm.doc.doctype === "Payment Entry") {
-                    var dfl = frappe.meta.docfield_list["Payment Entry"] || [];
-                    for (var k = 0; k < dfl.length; k++) {
-                        if (RELAXED_SET[dfl[k].fieldname]) {
-                            dfl[k].reqd = 0;
-                            dfl[k].mandatory_depends_on = "";
-                        }
-                    }
-                }
-            } catch (e) { console.warn("reformiqo_pe pre-patch failed", e); }
-            return _orig.apply(this, arguments);
-        };
-    }
-
-    frappe.ui.form.on("Payment Entry", {
-        refresh:     function (frm) { strip_mandatory(frm); },
-        onload:      function (frm) { strip_mandatory(frm); },
-        before_save: function (frm) { strip_mandatory(frm); },
-        validate:    function (frm) { strip_mandatory(frm); }
+function reformiqo_pe_relax(frm) {
+    RELAXED_PE_FIELDS.forEach(function (f) {
+        if (frm.fields_dict[f]) {
+            frm.set_df_property(f, "reqd", 0);
+            frm.set_df_property(f, "mandatory_depends_on", "");
+        }
     });
-})();
+}
+
+frappe.ui.form.on("Payment Entry", {
+    refresh:     function (frm) { reformiqo_pe_relax(frm); },
+    onload:      function (frm) { reformiqo_pe_relax(frm); },
+    before_save: function (frm) { reformiqo_pe_relax(frm); },
+    validate:    function (frm) { reformiqo_pe_relax(frm); }
+});
 """
 
 
