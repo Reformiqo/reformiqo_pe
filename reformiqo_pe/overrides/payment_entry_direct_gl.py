@@ -406,6 +406,24 @@ def _relaxed_set_missing_values(self):
 
 _ORIGINAL_VALIDATE_MANDATORY = None
 _ORIGINAL_MAKE_GL_ENTRIES = None
+_ORIGINAL_SET_DIFFERENCE_AMOUNT = None
+
+
+def _relaxed_set_difference_amount(self):
+	"""ABP2-I481 re-reopen #7 (Sahil 2026-07-01, trace #2): ERPNext's
+	set_difference_amount (payment_entry.py:1148) recomputes AFTER our
+	before_validate autowire. Its Pay-branch formula uses
+	base_party_amount (=0 with no party) so
+	difference = base_paid - 0 - 0 = 500 — non-zero, on_submit throws.
+
+	Force difference = 0 in Direct GL mode. Our validate_direct_gl_mode
+	already enforced balanced Σ Debit = Σ Credit; the accounting is
+	sound, ERPNext's party-oriented calc just doesn't apply.
+	"""
+	if cint(self.get("custom_is_direct_gl_payment") or 0) == 1:
+		self.difference_amount = 0
+		return
+	return _ORIGINAL_SET_DIFFERENCE_AMOUNT(self)
 
 
 def _relaxed_make_gl_entries(self, cancel=False, adv_adj=False):
@@ -542,6 +560,7 @@ def install_bank_check_override():
 	"""
 	global _ORIGINAL_VALIDATE_BANK_ACCOUNTS, _ORIGINAL_SET_MISSING_VALUES
 	global _ORIGINAL_VALIDATE_MANDATORY, _ORIGINAL_MAKE_GL_ENTRIES
+	global _ORIGINAL_SET_DIFFERENCE_AMOUNT
 	try:
 		from erpnext.accounts.doctype.payment_entry.payment_entry import (
 			PaymentEntry,
@@ -558,10 +577,13 @@ def install_bank_check_override():
 		PaymentEntry, "validate_mandatory", None)
 	_ORIGINAL_MAKE_GL_ENTRIES = getattr(
 		PaymentEntry, "make_gl_entries", None)
+	_ORIGINAL_SET_DIFFERENCE_AMOUNT = getattr(
+		PaymentEntry, "set_difference_amount", None)
 	PaymentEntry.validate_bank_accounts = _relaxed_validate_bank_accounts
 	PaymentEntry.set_missing_values = _relaxed_set_missing_values
 	PaymentEntry.validate_mandatory = _relaxed_validate_mandatory
 	PaymentEntry.make_gl_entries = _relaxed_make_gl_entries
+	PaymentEntry.set_difference_amount = _relaxed_set_difference_amount
 	PaymentEntry._reformiqo_pe_relaxed = True
 
 
