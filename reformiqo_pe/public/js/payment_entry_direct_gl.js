@@ -66,6 +66,27 @@ reformiqo_pe.refresh_preview = function (frm) {
 
 // L-01 — Direct GL toggle turned ON. Hide party fields form-wide,
 // empty the references table, drop party-driven mandatoriness.
+//
+// The list of fields to drop from mandatory here mirrors setup.py's
+// PROPERTY_SETTERS — both are needed because Frappe's client-side
+// check_mandatory reads reqd from three different caches
+// (fields_dict.df, meta.docfield_list, meta.get_docfield) and any
+// missed cache blocks save. See [[feedback-pe-meta-cache]].
+reformiqo_pe.DIRECT_GL_NON_MANDATORY_FIELDS = [
+	"party_type", "party", "party_name", "party_balance",
+	"party_bank_account", "contact_person", "contact_email",
+	"paid_from", "paid_to",
+	"paid_amount", "received_amount",
+	"paid_from_account_currency", "paid_to_account_currency",
+	"source_exchange_rate", "target_exchange_rate",
+	"reference_no", "reference_date",
+	// ABP2-I481 re-reopen (Sahil 2026-07-01, Image #63): drop
+	// header-level Project + Cost Center mandatoriness in Direct GL
+	// mode. Per-line CC + Project on the Debit/Credit tables carry
+	// the real values that stamp on GL.
+	"project", "cost_center",
+];
+
 reformiqo_pe.apply_direct_gl_on = function (frm) {
 	// Hide the standard party controls everywhere they appear.
 	["party_type", "party", "party_name", "party_balance",
@@ -77,10 +98,27 @@ reformiqo_pe.apply_direct_gl_on = function (frm) {
 	if ((frm.doc.references || []).length) {
 		frm.clear_table("references");
 	}
-	// Party-driven mandatoriness OFF
-	["party_type", "party"].forEach((f) => frm.toggle_reqd(f, false));
-	// Category + Direction + tables ON is done via the CF's own
-	// depends_on/mandatory_depends_on — nothing to do here.
+	// Drop reqd on every field the server autowire will populate.
+	// Also patch the meta caches directly because Frappe's
+	// check_mandatory reads from three different caches.
+	reformiqo_pe.DIRECT_GL_NON_MANDATORY_FIELDS.forEach((f) => {
+		if (frm.fields_dict[f]) {
+			frm.fields_dict[f].df.reqd = 0;
+			frm.fields_dict[f].df.mandatory_depends_on = "";
+		}
+		frm.toggle_reqd(f, false);
+		const meta_list = frappe.meta.docfield_list["Payment Entry"] || [];
+		const meta_row = meta_list.find((d) => d.fieldname === f);
+		if (meta_row) {
+			meta_row.reqd = 0;
+			meta_row.mandatory_depends_on = "";
+		}
+		const per_doc = frappe.meta.get_docfield("Payment Entry", f, frm.doc.name);
+		if (per_doc) {
+			per_doc.reqd = 0;
+			per_doc.mandatory_depends_on = "";
+		}
+	});
 };
 
 // L-02 — Direct GL toggle turned OFF. Restore standard behaviour.
@@ -126,6 +164,21 @@ frappe.ui.form.on("Payment Entry", {
 			reformiqo_pe.apply_direct_gl_on(frm);
 		} else {
 			reformiqo_pe.apply_direct_gl_off(frm);
+		}
+	},
+
+	// check_mandatory reads reqd right before the request is sent —
+	// re-apply the clearing to defeat any ERPNext handler that
+	// restored reqd=1 in between refresh and save.
+	before_save: function (frm) {
+		if (reformiqo_pe.is_direct_gl(frm)) {
+			reformiqo_pe.apply_direct_gl_on(frm);
+		}
+	},
+
+	validate: function (frm) {
+		if (reformiqo_pe.is_direct_gl(frm)) {
+			reformiqo_pe.apply_direct_gl_on(frm);
 		}
 	},
 

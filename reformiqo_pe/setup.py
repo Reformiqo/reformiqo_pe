@@ -177,44 +177,45 @@ def install_custom_fields():
 # throws "Party Type is mandatory" — see [[feedback-pe-meta-cache]]
 # for why we upsert Property Setters in code rather than Customize Form.
 _STANDARD_ONLY_MANDATORY = 'eval:!doc.custom_is_direct_gl_payment'
-PROPERTY_SETTERS = [
-	# party_type: mandatory only when Direct GL toggle is OFF.
-	{
+
+
+def _ps(field_name, prop, value, property_type="Data"):
+	return {
 		"doctype_or_field": "DocField",
 		"doc_type": PE,
-		"field_name": "party_type",
-		"property": "mandatory_depends_on",
-		"property_type": "Data",
-		"value": _STANDARD_ONLY_MANDATORY,
-	},
-	{
-		"doctype_or_field": "DocField",
-		"doc_type": PE,
-		"field_name": "party_type",
-		"property": "reqd",
-		"property_type": "Check",
-		"value": "0",
-	},
-	{
-		"doctype_or_field": "DocField",
-		"doc_type": PE,
-		"field_name": "party",
-		"property": "mandatory_depends_on",
-		"property_type": "Data",
-		"value": _STANDARD_ONLY_MANDATORY,
-	},
-	{
-		"doctype_or_field": "DocField",
-		"doc_type": PE,
-		"field_name": "party",
-		"property": "reqd",
-		"property_type": "Check",
-		"value": "0",
-	},
-	# paid_from / paid_to: FR-24 relaxes the account_type filter (done
-	# via the L-15 patch), but the fields themselves stay required.
-	# No Property Setter needed there — the base DocField reqd is fine.
-]
+		"field_name": field_name,
+		"property": prop,
+		"property_type": property_type,
+		"value": value,
+	}
+
+
+# Fields Frappe's client-side check_mandatory would otherwise block save
+# on. All are populated SERVER-side by our autowire hook, but the client
+# fires check_mandatory BEFORE the request even leaves the browser. So we
+# also flip reqd=0 + mandatory_depends_on=<standard-only> at the meta
+# layer via Property Setters. See [[feedback-pe-meta-cache]].
+_DIRECT_GL_OPTIONAL_FIELDS = (
+	"party_type", "party",
+	"paid_from", "paid_to",
+	"paid_amount", "received_amount",
+	"paid_from_account_currency", "paid_to_account_currency",
+	"source_exchange_rate", "target_exchange_rate",
+	"reference_no", "reference_date",
+	# ABP2-I481 re-reopen (Sahil 2026-07-01, Image #63): on the Panchhi
+	# bench (and any tenant that flipped these two to reqd=1 via a
+	# Custom Field), the client-side check_mandatory blocks save with
+	# "Project / Cost Center is mandatory" even though every row in
+	# our Debit / Credit child tables already carries its own CC and
+	# Project. Header-level CC + Project are NOT needed in Direct GL
+	# mode — the per-line values are what stamp on the GL entry.
+	"project", "cost_center",
+)
+
+PROPERTY_SETTERS = []
+for _f in _DIRECT_GL_OPTIONAL_FIELDS:
+	PROPERTY_SETTERS.append(_ps(_f, "mandatory_depends_on", _STANDARD_ONLY_MANDATORY))
+	PROPERTY_SETTERS.append(_ps(_f, "reqd", "0", property_type="Check"))
 
 
 def _install_property_setters():
