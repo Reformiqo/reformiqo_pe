@@ -201,7 +201,6 @@ var RELAXED_PE_FIELDS = [
     "paid_from_account_currency", "paid_to_account_currency",
     "source_exchange_rate", "target_exchange_rate",
     "reference_no", "reference_date",
-    "project", "cost_center"
 ];
 
 function reformiqo_pe_relax(frm) {
