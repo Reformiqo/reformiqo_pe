@@ -325,14 +325,6 @@ _DIRECT_GL_OPTIONAL_FIELDS = (
 	"paid_from_account_currency", "paid_to_account_currency",
 	"source_exchange_rate", "target_exchange_rate",
 	"reference_no", "reference_date",
-	# ABP2-I481 re-reopen (Sahil 2026-07-01, Image #63): on the Panchhi
-	# bench (and any tenant that flipped these two to reqd=1 via a
-	# Custom Field), the client-side check_mandatory blocks save with
-	# "Project / Cost Center is mandatory" even though every row in
-	# our Debit / Credit child tables already carries its own CC and
-	# Project. Header-level CC + Project are NOT needed in Direct GL
-	# mode — the per-line values are what stamp on the GL entry.
-	"project", "cost_center",
 )
 
 PROPERTY_SETTERS = []

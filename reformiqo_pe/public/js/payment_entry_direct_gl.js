@@ -79,12 +79,7 @@ reformiqo_pe.DIRECT_GL_NON_MANDATORY_FIELDS = [
 	"paid_amount", "received_amount",
 	"paid_from_account_currency", "paid_to_account_currency",
 	"source_exchange_rate", "target_exchange_rate",
-	"reference_no", "reference_date",
-	// ABP2-I481 re-reopen (Sahil 2026-07-01, Image #63): drop
-	// header-level Project + Cost Center mandatoriness in Direct GL
-	// mode. Per-line CC + Project on the Debit/Credit tables carry
-	// the real values that stamp on GL.
-	"project", "cost_center",
+	"reference_no", "reference_date"
 ];
 
 // ABP2-I481 re-reopen #3 (Sahil 2026-07-01, Image #65): despite the
